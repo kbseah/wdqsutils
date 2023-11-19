@@ -116,3 +116,86 @@ def quickstatements_taxon_add_desc(higher_taxon_qid, rank, desc, langcode):
         print(f"Quickstatements written to file: {filename}")
     else:
         print(f"Request to Wikidata server failed with status code: {r.status_code}")
+
+
+def get_articles_missing_descs(periodical_qid, langcode):
+    """Query Wikidata for scholarly articles with missing descriptions in language
+
+    Query by periodical to avoid timeout, because there are too many items that
+    are instances of "scholarly article".
+
+    Parameters
+    ----------
+    periodical_qid : str
+        QID of periodical in which the articles were published
+    langcode : str
+        Language code for description (e.g. "en", "zh")
+
+    Returns
+    -------
+    (r1, out)
+    r1 : requests.Request
+        Raw Request object returned from server
+    out : list
+        List of tuples of (QID, year) for the articles matching the query
+    """
+    url="https://query.wikidata.org/sparql"
+    query="""SELECT DISTINCT ?item ?date
+    WHERE
+    {
+      ?item wdt:P1433 wd:%s;
+            wdt:P31 wd:Q13442814;
+            wdt:P577 ?date.
+      FILTER(
+        NOT EXISTS {
+          ?item schema:description ?lang_desc.
+          FILTER(LANG(?lang_desc) = "%s")
+        }
+      )
+    } 
+    """ % (periodical_qid, langcode)
+    r1 = requests.get(url, params={'query': query})
+    out = []
+    if r1.ok:
+        # Parse XML
+        rtree = etree.fromstring(
+            r1.text.encode()
+        ) # .encode otherwise ValueError "Unicode strings with encoding declaration are not supported"
+        # Strip namespace prefix
+        for e in rtree.getiterator():
+            e.tag = etree.QName(e).localname
+    
+        # Translate results to dictionary
+        for e in rtree.iterdescendants('result'):
+            res_dict = {ee.get('name') : ee for ee in e.findall('binding')}
+            qid = res_dict['item'].find('uri').text.split("/")[-1]
+            year = res_dict['date'].find('literal').text.split("-")[0]
+            out.append((qid,year))
+
+    return r1, out
+
+
+def quickstatements_articles_add_desc(periodical_qid, langcode, desc_prefix="scholarly article published in ", desc_suffix=""):
+    r, out = get_articles_missing_descs(
+        periodical_qid, langcode
+    )
+    if r.ok:
+        print(f"Number of records: {len(out)}")
+        filename = f"add_D{langcode}_{periodical_qid}_articles.csv"
+        with open(filename, "w") as fh:
+            quickstatements_header = ['qid','D'+langcode,'#']
+            fh.write(','.join(quickstatements_header))
+            fh.write("\n")
+            for qid, year in out:
+                line = [
+                    qid,
+                    desc_prefix + year + desc_suffix,
+                    f'add {langcode} descriptions'
+                ]
+                fh.write(','.join(line))
+                fh.write("\n")
+        print(f"Quickstatements written to file: {filename}")
+    else:
+        print(f"Request to Wikidata server failed with status code: {r.status_code}")
+
+
