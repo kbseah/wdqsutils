@@ -1,0 +1,5 @@
+/done
+submit_batch.sh
+*.ipynb
+.ipynb_checkpoints
+__pycache__
