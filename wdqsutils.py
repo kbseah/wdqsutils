@@ -1,4 +1,5 @@
 import requests
+import datetime
 from lxml import etree
 
 
@@ -199,3 +200,104 @@ def quickstatements_articles_add_desc(periodical_qid, langcode, desc_prefix="sch
         print(f"Request to Wikidata server failed with status code: {r.status_code}")
 
 
+def get_taxa_missing_irmng(highertaxon_qid, highertaxon_rank, rank="genus"):
+    url="https://query.wikidata.org/sparql"
+    ranks = {
+        'genus' : 'Q34740',
+        'family' : 'Q35409',
+    }
+    rank_qid = ranks[rank]
+    query = """PREFIX gas: <http://www.bigdata.com/rdf/gas#>
+    SELECT DISTINCT ?item ?itemLabel ?taxonName
+    WHERE
+    {
+      SERVICE gas:service {
+        gas:program gas:gasClass "com.bigdata.rdf.graph.analytics.SSSP" ;
+                    gas:in wd:%s;
+                    gas:traversalDirection "Reverse" ;
+                    gas:out ?item ;
+                    gas:out1 ?depth ;
+                    gas:maxIterations 10 ;
+                    gas:linkType wdt:P171 .
+      }
+      ?item wdt:P105 wd:%s; 
+      FILTER ( NOT EXISTS { ?item wdt:P5055 ?identifier. } )
+      ?item wdt:P225 ?taxonName
+      OPTIONAL { ?item wdt:P171 ?linkTo }
+      SERVICE wikibase:label {
+        bd:serviceParam wikibase:language "en" .
+        ?item rdfs:label ?itemLabel .
+      }
+    }"""% (highertaxon_qid, rank_qid)
+    r1 = requests.get(url, params={'query': query})
+    out = {}
+    if r1.ok:
+        # Parse XML
+        rtree = etree.fromstring(
+            r1.text.encode()
+        ) # .encode otherwise ValueError "Unicode strings with encoding declaration are not supported"
+        # Strip namespace prefix
+        for e in rtree.getiterator():
+            e.tag = etree.QName(e).localname
+        # Translate results to dictionary
+        for e in rtree.iterdescendants('result'):
+            res_dict = {ee.get('name') : ee for ee in e.findall('binding')}
+            qid = res_dict['item'].find('uri').text.split("/")[-1]
+            taxonName = res_dict['taxonName'].find('literal').text
+            out[qid] = { 'qid' : qid, 'taxonName' : taxonName }
+    return r1, out
+
+def quickstatements_taxon_add_IRMNG_ID(highertaxon_qid, highertaxon_name, highertaxon_rank, rank="genus"):
+    """Match taxa without IRMNG IDs to IRMNG records
+
+    Match by taxon name and higher taxon to the IRMNG database, and only report
+    a result if there is only one hit, to avoid homonyms or other problematic
+    records. There is still a risk of homonyms slipping through, because we do
+    not check author, year, or publication (those need to be reconciled first).
+
+    Writes Quickstatements v2 directly to a CSV file.
+
+    Parameters
+    ----------
+    highertaxon_qid : str
+        QID of the higher taxon of interest
+    highertaxon_name : str
+        Taxon name of the higher taxon, used to match records retrieved from IRMNG.
+    highertaxon_rank : str
+        Rank of higher taxon, all lowercase, used to match records retrieved from IRMNG.
+    rank : str
+        Rank of taxon items in Wikidata to check, one of 'genus', 'family'
+        (IRMNG does not record subgeneric ranks).
+    """
+    r1, out = get_taxa_missing_irmng(highertaxon_qid, highertaxon_rank, rank=rank)
+    if r1.ok:
+        with open(f"add_P5055_{highertaxon_name}_{highertaxon_rank}.csv", "w") as fh:
+            fh.write("qid,P5055,S248,s813,#\n")
+            for qid in out:
+                irmng_url = "https://irmng.org/rest/AphiaRecordsByName/" + out[qid]['taxonName']
+                params = { 'like' : 'false', 'marine_only' : 'false' }
+                r = requests.get(irmng_url, params=params)
+                if r.ok and r.status_code == 200:
+                    ret = [
+                        rec['IRMNG_ID'] 
+                        for rec in r.json() 
+                        if highertaxon_rank in rec 
+                        and rec[highertaxon_rank] == highertaxon_name
+                    ]
+                    if len(ret) == 1:
+                        out[qid]['irmng_id'] = ret[0]
+                        out[qid]['retrieved'] = datetime.datetime.utcnow(
+                            ).strftime(
+                                "+%Y-%m-%dT00:00:00Z/11"
+                            ) # for quickstatements
+                        fh.write(','.join(
+                            [
+                                out[qid]['qid'],
+                                '"""' + str(out[qid]['irmng_id']) + '"""',
+                                'Q51885189',
+                                out[qid]['retrieved'],
+                                f'matched by name and {highertaxon_rank} {highertaxon_name} to IRMNG',
+                            ]
+                        ))
+                        fh.write("\n")
+            
