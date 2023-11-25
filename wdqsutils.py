@@ -1,6 +1,7 @@
 import requests
 import datetime
 from lxml import etree
+from collections import defaultdict
 
 
 def get_taxa_missing_descs(higher_taxon_qid, langcode, rank='species'):
@@ -230,7 +231,7 @@ def get_taxa_missing_irmng(highertaxon_qid, highertaxon_rank, rank="genus"):
       }
     }"""% (highertaxon_qid, rank_qid)
     r1 = requests.get(url, params={'query': query})
-    out = {}
+    out = defaultdict(list)
     if r1.ok:
         # Parse XML
         rtree = etree.fromstring(
@@ -241,10 +242,16 @@ def get_taxa_missing_irmng(highertaxon_qid, highertaxon_rank, rank="genus"):
             e.tag = etree.QName(e).localname
         # Translate results to dictionary
         for e in rtree.iterdescendants('result'):
-            res_dict = {ee.get('name') : ee for ee in e.findall('binding')}
-            qid = res_dict['item'].find('uri').text.split("/")[-1]
-            taxonName = res_dict['taxonName'].find('literal').text
-            out[qid] = { 'qid' : qid, 'taxonName' : taxonName }
+            try:
+                res_dict = {ee.get('name') : ee for ee in e.findall('binding')}
+                qid = res_dict['item'].find('uri').text.split("/")[-1]
+                taxonName = res_dict['taxonName'].find('literal').text
+                out[taxonName].append({ 'qid' : qid, 'taxonName' : taxonName })
+            except:
+                print("Error in parsing the following:")
+                print(res_dict)
+                qid = res_dict['item'].find('uri').text.split("/")[-1]
+                print(qid)
     return r1, out
 
 def quickstatements_taxon_add_IRMNG_ID(highertaxon_qid, highertaxon_name, highertaxon_rank, rank="genus"):
@@ -271,33 +278,35 @@ def quickstatements_taxon_add_IRMNG_ID(highertaxon_qid, highertaxon_name, higher
     """
     r1, out = get_taxa_missing_irmng(highertaxon_qid, highertaxon_rank, rank=rank)
     if r1.ok:
-        with open(f"add_P5055_{highertaxon_name}_{highertaxon_rank}.csv", "w") as fh:
+        print(f"{str(len(out))} Wikidata items found without IRMNG IDs")
+        with open(f"add_P5055_{highertaxon_name}_{highertaxon_rank}.{rank}.csv", "w") as fh:
             fh.write("qid,P5055,S248,s813,#\n")
-            for qid in out:
-                irmng_url = "https://irmng.org/rest/AphiaRecordsByName/" + out[qid]['taxonName']
-                params = { 'like' : 'false', 'marine_only' : 'false' }
-                r = requests.get(irmng_url, params=params)
-                if r.ok and r.status_code == 200:
-                    ret = [
-                        rec['IRMNG_ID'] 
-                        for rec in r.json() 
-                        if highertaxon_rank in rec 
-                        and rec[highertaxon_rank] == highertaxon_name
-                    ]
-                    if len(ret) == 1:
-                        out[qid]['irmng_id'] = ret[0]
-                        out[qid]['retrieved'] = datetime.datetime.utcnow(
-                            ).strftime(
-                                "+%Y-%m-%dT00:00:00Z/11"
-                            ) # for quickstatements
-                        fh.write(','.join(
-                            [
-                                out[qid]['qid'],
-                                '"""' + str(out[qid]['irmng_id']) + '"""',
-                                'Q51885189',
-                                out[qid]['retrieved'],
-                                f'matched by name and {highertaxon_rank} {highertaxon_name} to IRMNG',
-                            ]
-                        ))
-                        fh.write("\n")
-            
+            for taxonName in out:
+                if len(out[taxonName]) == 1: 
+                    irmng_url = "https://irmng.org/rest/AphiaRecordsByName/" + taxonName
+                    params = { 'like' : 'false', 'marine_only' : 'false' }
+                    r = requests.get(irmng_url, params=params)
+                    if r.ok and r.status_code == 200:
+                        ret = [
+                            rec['IRMNG_ID'] 
+                            for rec in r.json() 
+                            if highertaxon_rank in rec 
+                            and rec[highertaxon_rank] == highertaxon_name
+                        ]
+                        if len(ret) == 1:
+                            out[taxonName][0]['irmng_id'] = ret[0]
+                            out[taxonName][0]['retrieved'] = datetime.datetime.utcnow(
+                                ).strftime(
+                                    "+%Y-%m-%dT00:00:00Z/11"
+                                ) # for quickstatements
+                            fh.write(','.join(
+                                [
+                                    out[taxonName][0]['qid'],
+                                    '"""' + str(out[taxonName][0]['irmng_id']) + '"""',
+                                    'Q51885189',
+                                    out[taxonName][0]['retrieved'],
+                                    f'matched by name and {highertaxon_rank} {highertaxon_name} to IRMNG',
+                                ]
+                            ))
+                            fh.write("\n")
+                
