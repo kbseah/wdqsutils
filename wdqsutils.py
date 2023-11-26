@@ -26,7 +26,7 @@ def parse_sparql_return(r, uris, literals):
         # Strip namespace prefix
         for e in rtree.getiterator():
             e.tag = etree.QName(e).localname
-    
+
         # Translate results to dictionary
         for e in rtree.iterdescendants('result'):
             res_dict = {ee.get('name') : ee for ee in e.findall('binding')}
@@ -232,7 +232,7 @@ def get_articles_missing_descs(periodical_qid, langcode):
           FILTER(LANG(?lang_desc) = "%s")
         }
       )
-    } 
+    }
     """ % (periodical_qid, langcode)
     r = requests.get(url, params={'query': query})
     out = parse_sparql_return(r, ['item'], ['date'])
@@ -276,7 +276,7 @@ def get_articles_missing_descs(periodical_qid, langcode):
           FILTER(LANG(?lang_desc) = "%s")
         }
       )
-    } 
+    }
     """ % (periodical_qid, langcode)
     r = requests.get(url, params={'query': query})
     out = parse_sparql_return(r, ['item'], ['date'])
@@ -345,6 +345,7 @@ def get_taxa_missing_identifier(highertaxon_qid, db='irmng', rank="genus"):
     dbqids = {
         'irmng' : 'P5055',
         'gbif' : 'P846',
+        'index_fungorum' : 'P1391',
     }
     rank_qid = ranks[rank]
     query = """PREFIX gas: <http://www.bigdata.com/rdf/gas#>
@@ -360,7 +361,7 @@ def get_taxa_missing_identifier(highertaxon_qid, db='irmng', rank="genus"):
                     gas:maxIterations 10 ;
                     gas:linkType wdt:P171 .
       }
-      ?item wdt:P105 wd:%s; 
+      ?item wdt:P105 wd:%s;
       FILTER ( NOT EXISTS { ?item wdt:%s ?identifier. } )
       ?item wdt:P225 ?taxonName
       OPTIONAL { ?item wdt:P171 ?linkTo }
@@ -388,9 +389,7 @@ def get_taxa_missing_identifier(highertaxon_qid, db='irmng', rank="genus"):
                 out[taxonName].append({ 'qid' : qid, 'taxonName' : taxonName })
             except:
                 print("Error in parsing the following:")
-                print(res_dict)
-                qid = res_dict['item'].find('uri').text.split("/")[-1]
-                print(qid)
+                print(etree.tostring(e))
     return r1, out
 
 
@@ -421,15 +420,15 @@ def quickstatements_taxon_add_IRMNG_ID(highertaxon_qid, highertaxon_name, higher
         with open(f"add_P5055_{highertaxon_name}_{highertaxon_rank}.{rank}.csv", "w") as fh:
             fh.write("qid,P5055,S248,s813,#\n")
             for taxonName in out:
-                if len(out[taxonName]) == 1: 
+                if len(out[taxonName]) == 1:
                     irmng_url = "https://irmng.org/rest/AphiaRecordsByName/" + taxonName
                     params = { 'like' : 'false', 'marine_only' : 'false' }
                     r = requests.get(irmng_url, params=params)
                     if r.ok and r.status_code == 200:
                         ret = [
-                            rec['IRMNG_ID'] 
-                            for rec in r.json() 
-                            if highertaxon_rank in rec 
+                            rec['IRMNG_ID']
+                            for rec in r.json()
+                            if highertaxon_rank in rec
                             and rec[highertaxon_rank] == highertaxon_name
                         ]
                         if len(ret) == 1:
@@ -451,7 +450,7 @@ def quickstatements_taxon_add_IRMNG_ID(highertaxon_qid, highertaxon_name, higher
 
 
 def quickstatements_taxon_add_GBIF_ID(highertaxon_qid, highertaxon_name, highertaxon_rank, rank="genus"):
-    """Match taxa without GBIF IDs to IRMNG records
+    """Match taxa without GBIF IDs to GBIF records
 
     Parameters
     ----------
@@ -471,7 +470,7 @@ def quickstatements_taxon_add_GBIF_ID(highertaxon_qid, highertaxon_name, highert
         with open(f"add_P846_{highertaxon_name}_{highertaxon_rank}.{rank}.csv", "w") as fh:
             fh.write("qid,P846,S248,s813,#\n")
             for name in out:
-                if len(out[name]) == 1: 
+                if len(out[name]) == 1:
                     params = {
                         'strict' : 'true',
                         highertaxon_rank : highertaxon_name,
@@ -480,7 +479,12 @@ def quickstatements_taxon_add_GBIF_ID(highertaxon_qid, highertaxon_name, highert
                     }
                     r = requests.get(gbif_url, params=params)
                     # Multiple hits will result in matchType NONE
-                    if r.ok and r.status_code == 200 and r.json()['matchType'] == 'EXACT' and highertaxon_rank in r.json() and r.json()[highertaxon_rank] == highertaxon_name:
+                    if (
+                        r.ok and r.status_code == 200
+                        and r.json()['matchType'] == 'EXACT'
+                        and highertaxon_rank in r.json()
+                        and r.json()[highertaxon_rank] == highertaxon_name
+                    ):
                         # GBIF API still returns a match even if higher taxon
                         # does not match, so we have to filter it ourselves (?)
                         out[name][0]['gbif_id'] = r.json()['usageKey']
@@ -498,4 +502,71 @@ def quickstatements_taxon_add_GBIF_ID(highertaxon_qid, highertaxon_name, highert
                             ]
                         ))
                         fh.write("\n")
+
+
+def quickstatements_taxon_add_IndexFungorum_ID(highertaxon_qid, highertaxon_name, highertaxon_rank, rank="genus"):
+    """Match fungal taxa without Index Fungorum IDs to Index Fungorum records
+
+    Parameters
+    ----------
+    highertaxon_qid : str
+        QID of the higher taxon of interest
+    rank : str
+        Rank of taxon items in Wikidata to check, one of 'species', 'genus', 'family'
+    """
+    r1, out = get_taxa_missing_identifier(highertaxon_qid, 'index_fungorum', rank=rank)
+    rank_abbrevs = {
+        'species' : 'sp.',
+        'genus' : 'gen.',
+        'family' : 'fam.',
+    }
+    url = "http://www.indexfungorum.org/ixfwebservice/fungus.asmx/NameSearchDs"
+    if r1.ok:
+        print(f"{str(len(out))} Wikidata items found without Index Fungorum IDs")
+        with open(f"add_P1391_{highertaxon_name}_{highertaxon_rank}.{rank}.csv", "w") as fh:
+            fh.write("qid,P1391,S248,s813,#,P6507,S248,s813\n")
+            for name in out:
+                if len(out[name]) == 1:
+                    params = {
+                        'SearchText' : out[name][0]['taxonName'],
+                        'AnywhereInText' : 'false',
+                        'MaxNumber' : '5',
+                    }
+                    r = requests.get(url, params=params)
+                    # Multiple hits will result in matchType NONE
+                    if r.ok and r.status_code == 200:
+                        rtree = etree.fromstring(r.text.encode())
+                        for e in rtree.getiterator():
+                            e.tag = etree.QName(e).localname
+                        recs = []
+                        for e in rtree.iterdescendants('IndexFungorum'):
+                            rec = {
+                                g.tag : g.text for g in e.iterchildren()
+                            }
+                            if (
+                                'AUTHORS' in rec
+                                and rec['NAME_x0020_OF_x0020_FUNGUS'] == out[name][0]['taxonName']
+                                and rec['INFRASPECIFIC_x0020_RANK'] == rank_abbrevs[rank]
+                            ):
+                                recs.append(rec)
+                        if len(recs) == 1:
+                            out[name][0]['id'] = recs[0]['RECORD_x0020_NUMBER']
+                            out[name][0]['taxon_author_citation'] = recs[0]['AUTHORS']
+                            out[name][0]['retrieved'] = datetime.datetime.utcnow(
+                                ).strftime(
+                                    "+%Y-%m-%dT00:00:00Z/11"
+                                ) # for quickstatements
+                            fh.write(','.join(
+                                [
+                                    out[name][0]['qid'],
+                                    '"""' + str(out[name][0]['id']) + '"""',
+                                    'Q1860469',
+                                    out[name][0]['retrieved'],
+                                    f'matched by name and rank to Index Fungorum',
+                                    '"""' + str(out[name][0]['taxon_author_citation']) + '"""',
+                                    'Q1860469',
+                                    out[name][0]['retrieved'],
+                                ]
+                            ))
+                            fh.write("\n")
 
