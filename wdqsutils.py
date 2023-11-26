@@ -335,9 +335,10 @@ def quickstatements_articles_add_desc(periodical_qid, langcode):
         print(f"Request to Wikidata server failed with status code: {r.status_code}")
 
 
-def get_taxa_missing_irmng(highertaxon_qid, highertaxon_rank, rank="genus"):
+def get_taxa_missing_irmng(highertaxon_qid, rank="genus"):
     url="https://query.wikidata.org/sparql"
     ranks = {
+        'species' : 'Q7432',
         'genus' : 'Q34740',
         'family' : 'Q35409',
     }
@@ -408,10 +409,9 @@ def quickstatements_taxon_add_IRMNG_ID(highertaxon_qid, highertaxon_name, higher
     highertaxon_rank : str
         Rank of higher taxon, all lowercase, used to match records retrieved from IRMNG.
     rank : str
-        Rank of taxon items in Wikidata to check, one of 'genus', 'family'
-        (IRMNG does not record subgeneric ranks).
+        Rank of taxon items in Wikidata to check, one of 'species', 'genus', 'family'
     """
-    r1, out = get_taxa_missing_irmng(highertaxon_qid, highertaxon_rank, rank=rank)
+    r1, out = get_taxa_missing_irmng(highertaxon_qid, rank=rank)
     if r1.ok:
         print(f"{str(len(out))} Wikidata items found without IRMNG IDs")
         with open(f"add_P5055_{highertaxon_name}_{highertaxon_rank}.{rank}.csv", "w") as fh:
