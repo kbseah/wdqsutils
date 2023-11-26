@@ -480,7 +480,9 @@ def quickstatements_taxon_add_GBIF_ID(highertaxon_qid, highertaxon_name, highert
                     }
                     r = requests.get(gbif_url, params=params)
                     # Multiple hits will result in matchType NONE
-                    if r.ok and r.status_code == 200 and r.json()['matchType'] == 'EXACT':
+                    if r.ok and r.status_code == 200 and r.json()['matchType'] == 'EXACT' and highertaxon_rank in r.json() and r.json()[highertaxon_rank] == highertaxon_name:
+                        # GBIF API still returns a match even if higher taxon
+                        # does not match, so we have to filter it ourselves (?)
                         out[name][0]['gbif_id'] = r.json()['usageKey']
                         out[name][0]['retrieved'] = datetime.datetime.utcnow(
                             ).strftime(
