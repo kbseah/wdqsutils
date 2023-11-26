@@ -468,8 +468,8 @@ def quickstatements_taxon_add_GBIF_ID(highertaxon_qid, highertaxon_name, highert
     gbif_url = "https://api.gbif.org/v1/species/match"
     if r1.ok:
         print(f"{str(len(out))} Wikidata items found without GBIF IDs")
-        with open(f"add_P5055_{highertaxon_name}_{highertaxon_rank}.{rank}.csv", "w") as fh:
-            fh.write("qid,P5055,S248,s813,#\n")
+        with open(f"add_P846_{highertaxon_name}_{highertaxon_rank}.{rank}.csv", "w") as fh:
+            fh.write("qid,P846,S248,s813,#\n")
             for name in out:
                 if len(out[name]) == 1: 
                     params = {
