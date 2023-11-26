@@ -4,6 +4,44 @@ from lxml import etree
 from collections import defaultdict
 
 
+def parse_sparql_return(r, uris, literals):
+    """
+    Parse XML returned by Wikidata SPARQL query and return a list of dicts
+    
+    Parameters
+    ----------
+    r : requests.models.Response
+        Object returned by requests.request
+    uris : list
+        Names of bindings that are to be interpreted as Wikidata URIs
+    literals : list
+        Names of bindings that are to be interpreted as text strings
+    """
+    out = []
+    if r.ok:
+        # Parse XML
+        rtree = etree.fromstring(
+            r.text.encode()
+        ) # .encode otherwise ValueError "Unicode strings with encoding declaration are not supported"
+        # Strip namespace prefix
+        for e in rtree.getiterator():
+            e.tag = etree.QName(e).localname
+    
+        # Translate results to dictionary
+        for e in rtree.iterdescendants('result'):
+            res_dict = {ee.get('name') : ee for ee in e.findall('binding')}
+            for key in uris:
+                if key in res_dict:
+                    res_dict[key] = res_dict[key].find('uri').text.split("/")[-1]
+            for key in literals:
+                if key in res_dict:
+                    res_dict[key] = res_dict[key].find('literal').text
+            out.append(res_dict)
+        return(out)
+    else:
+        print("Response not ok")
+
+
 def get_taxa_missing_descs(higher_taxon_qid, langcode, rank='species'):
     """Query Wikidata for taxon items with missing descriptions in language
 
@@ -32,7 +70,7 @@ def get_taxa_missing_descs(higher_taxon_qid, langcode, rank='species'):
     }
     rank_qid = ranks[rank]
     query="""PREFIX gas: <http://www.bigdata.com/rdf/gas#>
-    SELECT DISTINCT ?item ?itemLabel ?itemDesc
+    SELECT DISTINCT ?item ?itemLabel ?parentTaxonRankLabel ?parentTaxonName
     WHERE
     {
       SERVICE gas:service {
@@ -44,12 +82,16 @@ def get_taxa_missing_descs(higher_taxon_qid, langcode, rank='species'):
                     gas:maxIterations 10 ;
                     gas:linkType wdt:P171 .
       }
-      ?item wdt:P31 wd:Q16521;
+      ?item wdt:P31 wd:Q16521; # avoid fossil taxa
             wdt:P105 wd:%s;
+            wdt:P171 ?parentTaxon.
+      ?parentTaxon wdt:P225 ?parentTaxonName;
+                   wdt:P105 ?parentTaxonRank.
       OPTIONAL { ?item wdt:P171 ?linkTo }
       SERVICE wikibase:label {
         bd:serviceParam wikibase:language "%s" .
         ?item rdfs:label ?itemLabel .
+        ?parentTaxonRank rdfs:label ?parentTaxonRankLabel .
       }
       FILTER(
         NOT EXISTS {
@@ -59,23 +101,9 @@ def get_taxa_missing_descs(higher_taxon_qid, langcode, rank='species'):
       )
     }
     """ % (higher_taxon_qid, rank_qid, langcode, langcode)
-    r1 = requests.get(url, params={'query': query})
-    out = []
-    if r1.ok:
-        # Parse XML
-        rtree = etree.fromstring(
-            r1.text.encode()
-        ) # .encode otherwise ValueError "Unicode strings with encoding declaration are not supported"
-        # Strip namespace prefix
-        for e in rtree.getiterator():
-            e.tag = etree.QName(e).localname
-    
-        # Translate results to dictionary
-        for e in rtree.iterdescendants('result'):
-            res_dict = {ee.get('name') : ee for ee in e.findall('binding')}
-            qid = res_dict['item'].find('uri').text.split("/")[-1]
-            out.append(qid)
-    return r1, out
+    r = requests.get(url, params={'query': query})
+    out = parse_sparql_return(r, ['item'], ['itemLabel','parentTaxonRankLabel','parentTaxonName'])
+    return r, out
 
 
 def quickstatements_taxon_add_desc(higher_taxon_qid, rank, desc, langcode):
@@ -111,10 +139,60 @@ def quickstatements_taxon_add_desc(higher_taxon_qid, rank, desc, langcode):
             quickstatements_header = ['qid','D'+langcode,'#']
             fh.write(','.join(quickstatements_header))
             fh.write("\n")
-            for qid in out:
-                line = [qid, desc, f'add {langcode} descriptions']
+            for rec in out:
+                line = [rec['item'], desc, f'add {langcode} descriptions']
                 fh.write(','.join(line))
                 fh.write("\n")
+        print(f"Quickstatements written to file: {filename}")
+    else:
+        print(f"Request to Wikidata server failed with status code: {r.status_code}")
+
+
+def quickstatements_taxon_add_desc_long(higher_taxon_qid, rank, vernacular_name, langcode):
+    """Generate Quickstatements to add descriptions to taxon items
+
+    Search for taxon items (descendants of a specified higher taxon) without
+    descriptions in a target language, and generate QuickStatements v2 (CSV
+    format) batch commands to add the same provided description to each of them.
+
+    For example, find all ciliate species without English descriptions and add
+    "species of ciliates in the genus XXX" to each of them.
+
+    Output written to file.
+
+    Parameters
+    ----------
+    higher_taxon_qid : str
+        QID of the taxon of interest
+    rank : str
+        One of "species", "genus", "family"
+    vernacular_name : str
+        Vernacular name (plural form) to use in the description
+    langcode : str
+        Language code: en or de only
+    """
+    r, out = get_taxa_missing_descs(
+        higher_taxon_qid,langcode,rank
+    )
+    rankLang = {
+        'de' : {'species':'Art', 'genus': 'Gattung', 'family':'Familie'},
+    }
+    if r.ok:
+        print(f"Number of records: {len(out)}")
+        filename = f"add_D{langcode}_{higher_taxon_qid}_{rank}.csv"
+        with open(filename, "w") as fh:
+            quickstatements_header = ['qid','D'+langcode,'#']
+            fh.write(','.join(quickstatements_header))
+            fh.write("\n")
+            for rec in out:
+                if 'parentTaxonName' in rec and 'parentTaxonRankLabel' in rec:
+                    if langcode == 'en':
+                        desc = f"{rank} of {vernacular_name} in the {rec['parentTaxonRankLabel']} {rec['parentTaxonName']}"
+                    if langcode == 'de':
+                        desc = f"{rankLang['de'][rank]} der {vernacular_name} der {rec['parentTaxonRankLabel']} {rec['parentTaxonName']}"
+                    line = [rec['item'], desc, f'add {langcode} descriptions']
+                    fh.write(','.join(line))
+                    fh.write("\n")
         print(f"Quickstatements written to file: {filename}")
     else:
         print(f"Request to Wikidata server failed with status code: {r.status_code}")
@@ -156,31 +234,86 @@ def get_articles_missing_descs(periodical_qid, langcode):
       )
     } 
     """ % (periodical_qid, langcode)
-    r1 = requests.get(url, params={'query': query})
-    out = []
-    if r1.ok:
-        # Parse XML
-        rtree = etree.fromstring(
-            r1.text.encode()
-        ) # .encode otherwise ValueError "Unicode strings with encoding declaration are not supported"
-        # Strip namespace prefix
-        for e in rtree.getiterator():
-            e.tag = etree.QName(e).localname
-    
-        # Translate results to dictionary
-        for e in rtree.iterdescendants('result'):
-            res_dict = {ee.get('name') : ee for ee in e.findall('binding')}
-            qid = res_dict['item'].find('uri').text.split("/")[-1]
-            year = res_dict['date'].find('literal').text.split("-")[0]
-            out.append((qid,year))
-
-    return r1, out
+    r = requests.get(url, params={'query': query})
+    out = parse_sparql_return(r, ['item'], ['date'])
+    for rec in out:
+        rec['year'] = rec['date'].split("-")[0]
+    return r, out
 
 
-def quickstatements_articles_add_desc(periodical_qid, langcode, desc_prefix="scholarly article published in ", desc_suffix=""):
+
+def get_articles_missing_descs(periodical_qid, langcode):
+    """Query Wikidata for scholarly articles with missing descriptions in language
+
+    Query by periodical to avoid timeout, because there are too many items that
+    are instances of "scholarly article".
+
+    Parameters
+    ----------
+    periodical_qid : str
+        QID of periodical in which the articles were published
+    langcode : str
+        Language code for description (e.g. "en", "zh")
+
+    Returns
+    -------
+    (r1, out)
+    r1 : requests.Request
+        Raw Request object returned from server
+    out : list
+        List of tuples of (QID, year) for the articles matching the query
+    """
+    url="https://query.wikidata.org/sparql"
+    query="""SELECT DISTINCT ?item ?date
+    WHERE
+    {
+      ?item wdt:P1433 wd:%s;
+            wdt:P31 wd:Q13442814;
+            wdt:P577 ?date.
+      FILTER(
+        NOT EXISTS {
+          ?item schema:description ?lang_desc.
+          FILTER(LANG(?lang_desc) = "%s")
+        }
+      )
+    } 
+    """ % (periodical_qid, langcode)
+    r = requests.get(url, params={'query': query})
+    out = parse_sparql_return(r, ['item'], ['date'])
+    for rec in out:
+        rec['year'] = rec['date'].split("-")[0]
+    return r, out
+
+
+def quickstatements_articles_add_desc(periodical_qid, langcode):
+    """Quickstatements to add missing descriptions for scholarly articles
+
+    Parameters
+    ----------
+    periodical_qid : str
+        Wikidata QID of the periodical the articles are published in
+    langcode : str
+        Language code for language of description. One of: en, de, zh, zh-s, zh-hant
+    """
     r, out = get_articles_missing_descs(
         periodical_qid, langcode
     )
+    desc_prefix = {
+        'en' : 'scholarly article published in ',
+        'de' : 'im Jahr ',
+        'ms' : 'makalah ilmiah yang diterbitkan pada ',
+        'zh' : '',
+        'zh-hans' : '',
+        'zh-hant' : '',
+    }
+    desc_suffix = {
+        'en' : '',
+        'de' : ' veröffentlichter wissenschaftlicher Artikel',
+        'ms' : '',
+        'zh' : '年學術文章',
+        'zh-hans' : '年学术文章',
+        'zh-hant' : '年學術文章',
+    }
     if r.ok:
         print(f"Number of records: {len(out)}")
         filename = f"add_D{langcode}_{periodical_qid}_articles.csv"
@@ -188,14 +321,15 @@ def quickstatements_articles_add_desc(periodical_qid, langcode, desc_prefix="sch
             quickstatements_header = ['qid','D'+langcode,'#']
             fh.write(','.join(quickstatements_header))
             fh.write("\n")
-            for qid, year in out:
-                line = [
-                    qid,
-                    desc_prefix + year + desc_suffix,
-                    f'add {langcode} descriptions'
-                ]
-                fh.write(','.join(line))
-                fh.write("\n")
+            for rec in out:
+                if 'year' in rec:
+                    line = [
+                        rec['item'],
+                        desc_prefix[langcode] + rec['year'] + desc_suffix[langcode],
+                        f'add {langcode} descriptions'
+                    ]
+                    fh.write(','.join(line))
+                    fh.write("\n")
         print(f"Quickstatements written to file: {filename}")
     else:
         print(f"Request to Wikidata server failed with status code: {r.status_code}")
@@ -254,6 +388,7 @@ def get_taxa_missing_irmng(highertaxon_qid, highertaxon_rank, rank="genus"):
                 print(qid)
     return r1, out
 
+
 def quickstatements_taxon_add_IRMNG_ID(highertaxon_qid, highertaxon_name, highertaxon_rank, rank="genus"):
     """Match taxa without IRMNG IDs to IRMNG records
 
@@ -309,4 +444,4 @@ def quickstatements_taxon_add_IRMNG_ID(highertaxon_qid, highertaxon_name, higher
                                 ]
                             ))
                             fh.write("\n")
-                
+
