@@ -335,12 +335,16 @@ def quickstatements_articles_add_desc(periodical_qid, langcode):
         print(f"Request to Wikidata server failed with status code: {r.status_code}")
 
 
-def get_taxa_missing_irmng(highertaxon_qid, rank="genus"):
+def get_taxa_missing_identifier(highertaxon_qid, db='irmng', rank="genus"):
     url="https://query.wikidata.org/sparql"
     ranks = {
         'species' : 'Q7432',
         'genus' : 'Q34740',
         'family' : 'Q35409',
+    }
+    dbqids = {
+        'irmng' : 'P5055',
+        'gbif' : 'P846',
     }
     rank_qid = ranks[rank]
     query = """PREFIX gas: <http://www.bigdata.com/rdf/gas#>
@@ -357,14 +361,14 @@ def get_taxa_missing_irmng(highertaxon_qid, rank="genus"):
                     gas:linkType wdt:P171 .
       }
       ?item wdt:P105 wd:%s; 
-      FILTER ( NOT EXISTS { ?item wdt:P5055 ?identifier. } )
+      FILTER ( NOT EXISTS { ?item wdt:%s ?identifier. } )
       ?item wdt:P225 ?taxonName
       OPTIONAL { ?item wdt:P171 ?linkTo }
       SERVICE wikibase:label {
         bd:serviceParam wikibase:language "en" .
         ?item rdfs:label ?itemLabel .
       }
-    }"""% (highertaxon_qid, rank_qid)
+    }"""% (highertaxon_qid, rank_qid, dbqids[db])
     r1 = requests.get(url, params={'query': query})
     out = defaultdict(list)
     if r1.ok:
@@ -411,7 +415,7 @@ def quickstatements_taxon_add_IRMNG_ID(highertaxon_qid, highertaxon_name, higher
     rank : str
         Rank of taxon items in Wikidata to check, one of 'species', 'genus', 'family'
     """
-    r1, out = get_taxa_missing_irmng(highertaxon_qid, rank=rank)
+    r1, out = get_taxa_missing_identifier(highertaxon_qid, 'irmng', rank=rank)
     if r1.ok:
         print(f"{str(len(out))} Wikidata items found without IRMNG IDs")
         with open(f"add_P5055_{highertaxon_name}_{highertaxon_rank}.{rank}.csv", "w") as fh:
@@ -444,4 +448,52 @@ def quickstatements_taxon_add_IRMNG_ID(highertaxon_qid, highertaxon_name, higher
                                 ]
                             ))
                             fh.write("\n")
+
+
+def quickstatements_taxon_add_GBIF_ID(highertaxon_qid, highertaxon_name, highertaxon_rank, rank="genus"):
+    """Match taxa without GBIF IDs to IRMNG records
+
+    Parameters
+    ----------
+    highertaxon_qid : str
+        QID of the higher taxon of interest
+    highertaxon_name : str
+        Taxon name of the higher taxon, used to match records retrieved from GBIF.
+    highertaxon_rank : str
+        Rank of higher taxon, all lowercase, used to match records retrieved from GBIF.
+    rank : str
+        Rank of taxon items in Wikidata to check, one of 'species', 'genus', 'family'
+    """
+    r1, out = get_taxa_missing_identifier(highertaxon_qid, 'gbif', rank=rank)
+    gbif_url = "https://api.gbif.org/v1/species/match"
+    if r1.ok:
+        print(f"{str(len(out))} Wikidata items found without GBIF IDs")
+        with open(f"add_P5055_{highertaxon_name}_{highertaxon_rank}.{rank}.csv", "w") as fh:
+            fh.write("qid,P5055,S248,s813,#\n")
+            for name in out:
+                if len(out[name]) == 1: 
+                    params = {
+                        'strict' : 'true',
+                        highertaxon_rank : highertaxon_name,
+                        'rank' : rank,
+                        'name' : out[name][0]['taxonName']
+                    }
+                    r = requests.get(gbif_url, params=params)
+                    # Multiple hits will result in matchType NONE
+                    if r.ok and r.status_code == 200 and r.json()['matchType'] == 'EXACT':
+                        out[name][0]['gbif_id'] = r.json()['usageKey']
+                        out[name][0]['retrieved'] = datetime.datetime.utcnow(
+                            ).strftime(
+                                "+%Y-%m-%dT00:00:00Z/11"
+                            ) # for quickstatements
+                        fh.write(','.join(
+                            [
+                                out[name][0]['qid'],
+                                '"""' + str(out[name][0]['gbif_id']) + '"""',
+                                'Q1531570',
+                                out[name][0]['retrieved'],
+                                f'matched by name and {highertaxon_rank} {highertaxon_name} to GBIF',
+                            ]
+                        ))
+                        fh.write("\n")
 
