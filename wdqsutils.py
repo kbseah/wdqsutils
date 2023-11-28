@@ -1,5 +1,7 @@
 import requests
 import datetime
+import time
+import re
 from lxml import etree
 from collections import defaultdict
 
@@ -604,3 +606,48 @@ def get_fungi_missing_taxon_author_citation(highertaxon_qid):
     r = requests.get(url, params={'query': query})
     out = parse_sparql_return(r, ['item'], ['indexFungorum','taxonName','yearTaxonPublication'])
     return (r, out)
+
+def quickstatements_taxon_author_citations_from_index_fungorum(highertaxon_qid):
+    r, o = get_fungi_missing_taxon_author_citation(highertaxon_qid)
+    if not r.ok:
+        print(f"Request not ok, status code {r.status_code}")
+        return r
+    print(f"{str(len(o))} items without taxon author citations")
+    url = "http://www.indexfungorum.org/ixfwebservice/fungus.asmx/NameByKey"
+    authors_statements = [["qid","P6507","S248","s813"],] # initialize with header
+    years_statements = [["qid","P225","qal574","S248","s813"],] # initialize with header
+    for rec in o:
+        params = { 'NameKey' : rec['indexFungorum'] }
+        rr = requests.get(url,params=params)
+        if rr.ok and rr.status_code == 200:
+            rtree = etree.fromstring(rr.text.encode())
+            for e in rtree.getiterator():
+                e.tag = etree.QName(e).localname
+            for e in rtree.iterdescendants('IndexFungorum'):
+                rrec = { g.tag : g.text for g in e.iterchildren() }
+                if 'AUTHORS' in rrec and 'YEAR_x0020_OF_x0020_PUBLICATION' in rrec:
+                    if 'yearTaxonPublication' not in rec:
+                        out_y = [
+                            rec['item'],
+                            "\"\"\"" + rec['taxonName'] + "\"\"\"",
+                            "+" + rrec['YEAR_x0020_OF_x0020_PUBLICATION'] + "-01-01T00:00:00Z/9", # /9 - year precision
+                            "Q1860469",
+                            datetime.datetime.utcnow().strftime("+%Y-%m-%dT00:00:00Z/11"), # /11 - day
+                        ]
+                        years_statements.append(out_y)
+                    out_a = [
+                        rec['item'],
+                        "\"\"\"" + rrec['AUTHORS'] + "\"\"\"",
+                        "Q1860469",
+                        datetime.datetime.utcnow().strftime("+%Y-%m-%dT00:00:00Z/11"),
+                    ]
+                    authors_statements.append(out_a)
+    # Write quickstatements to files
+    with open(f"add_taxon_author_citation_{highertaxon_qid}.csv","w") as fh:
+        for r in authors_statements:
+            fh.write(",".join(r))
+            fh.write("\n")
+    with open(f"add_year_taxon_pub_{highertaxon_qid}.csv","w") as fh:
+        for r in years_statements:
+            fh.write(",".join(r))
+            fh.write("\n")
