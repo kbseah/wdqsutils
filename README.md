@@ -10,6 +10,8 @@ Scripts to generate batch edits of Wikidata for the following:
  - [x] Add missing identifiers for taxa from GBIF database, using higher taxonomy to skip homonyms
  - [x] Add missing identifiers for fungal taxa from Index Fungorum
  - [ ] Add year of taxon publication for taxon names with reference where reference has role first valid description
+ - [x] Link botanical authors as taxon author qualifiers by parsing taxon author citation strings
+ - [ ] Find items where some but not all authors in the taxon author citation are linked as taxon author qualifiers
 
 
 Notes
