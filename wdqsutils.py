@@ -791,9 +791,11 @@ def quickstatements_taxon_authors_from_citations(highertaxon_qid):
     print(f"{str(len(o))} items found without taxon author qualifiers but with taxon author citations")
     auth_parsed = {}
     for rec in o:
-        auth_parsed[rec['item']] = parse_botanical_taxon_author_citation(
+        parse_out = parse_botanical_taxon_author_citation(
             rec['taxonAuthorCitation']
         )
+        if parse_out:
+            auth_parsed[rec['item']] = parse_out
     auths = []
     for item in auth_parsed:
         auths.extend(auth_parsed[item]['auth'])
@@ -808,11 +810,11 @@ def quickstatements_taxon_authors_from_citations(highertaxon_qid):
     qs_exauths = [['qid','P225','qal697','#'],] # initialize with header
     for rec in o:
         authors = parse_botanical_taxon_author_citation(rec['taxonAuthorCitation'])
-        if 'auth' in authors:
+        if authors and 'auth' in authors:
             for a in authors['auth']:
                 if a in auth2qid:
                     qs_auths.append([ rec['item'], '"""'+rec['taxonName']+'"""', auth2qid[a], 'matched from taxon author citation string'])
-        if 'ex_auth' in authors:
+        if authors and 'ex_auth' in authors:
             for a in authors['ex_auth']:
                 if a in auth2qid:
                     qs_exauths.append([ rec['item'], '"""'+rec['taxonName']+'"""', auth2qid[a], 'matched from taxon author citation string'])
