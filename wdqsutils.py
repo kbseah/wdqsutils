@@ -570,3 +570,37 @@ def quickstatements_taxon_add_IndexFungorum_ID(highertaxon_qid, highertaxon_name
                             ))
                             fh.write("\n")
 
+
+def get_fungi_missing_taxon_author_citation(highertaxon_qid):
+    url="https://query.wikidata.org/sparql"
+    query="""PREFIX gas: <http://www.bigdata.com/rdf/gas#>
+
+    SELECT DISTINCT ?item ?taxonName ?yearTaxonPublication ?indexFungorum
+    WHERE
+    {
+      SERVICE gas:service {
+        gas:program gas:gasClass "com.bigdata.rdf.graph.analytics.SSSP" ;
+                    gas:in wd:%s;
+                    gas:traversalDirection "Reverse" ;
+                    gas:out ?item ;
+                    gas:out1 ?depth ;
+                    gas:maxIterations 10 ;
+                    gas:linkType wdt:P171 .
+      }
+      OPTIONAL { ?item wdt:P171 ?linkTo }
+      ?item wdt:P1391 ?indexFungorum;
+            wdt:P225 ?taxonName.
+      OPTIONAL { 
+        ?item p:P225 [
+          pq:P574 ?yearTaxonPublication
+        ]
+      }
+      FILTER(
+        NOT EXISTS {
+          ?item wdt:P6507 ?taxonAuthorCitation .
+        }
+      )
+    }""" % (highertaxon_qid)
+    r = requests.get(url, params={'query': query})
+    out = parse_sparql_return(r, ['item'], ['indexFungorum','taxonName','yearTaxonPublication'])
+    return (r, out)
