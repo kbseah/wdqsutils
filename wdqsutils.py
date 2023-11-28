@@ -607,6 +607,7 @@ def get_fungi_missing_taxon_author_citation(highertaxon_qid):
     out = parse_sparql_return(r, ['item'], ['indexFungorum','taxonName','yearTaxonPublication'])
     return (r, out)
 
+
 def quickstatements_taxon_author_citations_from_index_fungorum(highertaxon_qid):
     r, o = get_fungi_missing_taxon_author_citation(highertaxon_qid)
     if not r.ok:
@@ -651,3 +652,178 @@ def quickstatements_taxon_author_citations_from_index_fungorum(highertaxon_qid):
         for r in years_statements:
             fh.write(",".join(r))
             fh.write("\n")
+
+
+def get_taxon_author_citations_but_no_taxon_author(highertaxon_qid):
+    """Get Wikidata items for taxa with taxon author citation but not taxon authors
+
+    Aim is to use parse taxon author citation to find Wikidata items 
+    corresponding to the taxon authors and link them with new taxon author
+    statements (as qualifiers to the taxon name statement).
+
+    Parameters
+    ----------
+    highertaxon_qid : str
+        QID of higher taxon containing items of interest.
+        Example: Q831743 for Russulaceae (fungi)
+    """
+    query="""SELECT ?item ?taxonName ?taxonAuthorCitation WHERE {
+      SERVICE gas:service {
+        gas:program gas:gasClass "com.bigdata.rdf.graph.analytics.SSSP";
+          gas:in wd:%s;
+          gas:traversalDirection "Reverse";
+          gas:out ?item;
+          gas:out1 ?depth;
+          gas:maxIterations 10 ;
+          gas:linkType wdt:P171.
+      }
+      ?item wdt:P6507 ?taxonAuthorCitation;
+            wdt:P225 ?taxonName.
+      FILTER(NOT EXISTS {
+        ?item p:P225 _:b3.
+        _:b3 pq:P405 ?taxonAuthor.
+      })
+    }""" % (highertaxon_qid)
+    r = requests.get("https://query.wikidata.org/sparql", params={'query' : query})
+    o = parse_sparql_return(r, ['item'], ['taxonName', 'taxonAuthorCitation'])
+    if r.ok:
+        return r, o
+
+
+def parse_botanical_taxon_author_citation(citation):
+    """Parse botanical taxon author citation to component authors
+
+    Discard basionym authors (within parentheses), separate ex taxon authors (P697).
+    Remove spaces after periods to follow format in IPNI database
+
+    Parameters
+    ----------
+    citation : str
+        Taxon author citation, e.g. "(B.C. Zhang & Y.N. Yu) Trappe, T. Lebel & Castellano"
+
+    Returns
+    -------
+    dict of lists, keyed by 'auth' (taxon authors) and 'ex_auth' (ex taxon authors).
+    """
+    if citation.count(')') == 1:
+        # Remove basionym authors
+        citation = citation.split(')')[1]
+    elif citation.count(')') > 1:
+        print(f"Too many parens in this citation: {citation}")
+        return
+    if citation.count(' ex ') > 1:
+        print(f"Too many 'ex' in this citation: {citation}")
+        return
+    elif citation.count(' ex ') == 1:
+        [ex_auth, auth] = citation.split(' ex ')
+        ex_auth = re.split(r',|&', ex_auth)
+        ex_auth = [a.replace('. ','.') for a in ex_auth]
+        auth = re.split(r',|&', auth)
+        auth = [a.replace('. ','.').rstrip().lstrip() for a in auth]
+        return { 'ex_auth' : ex_auth, 'auth' : auth }
+    elif citation.count(' ex ') == 0:
+        auth = re.split(r',|&', citation)
+        auth = [a.replace('. ','.').rstrip().lstrip() for a in auth]
+        return { 'auth' : auth }
+
+
+def get_items_from_botanical_author_citation(auths):
+    """Look up Wikidata QIDs for botanical authors by author name abbreviation
+
+    Query is broken into 25-value chunks with 1 second pauses in between.
+
+    Parameters
+    ----------
+    auths : list
+        List of author name abbreviations, no spaces after periods.
+
+    Returns
+    -------
+    dict
+        Dict keyed by author name abbreviations with Wikidata QIDs as values.
+        QIDs not found are silently ignored.
+    """
+    out = []
+    chunksize = 25 # avoid error 414
+    for chunk in [auths[i:i+chunksize] for i in range(0, len(auths), chunksize)]:
+        vals = " ".join([f'"{a}"' for a in chunk])
+        query = """SELECT ?item ?value ?itemLabel WHERE {
+          VALUES ?value {
+            %s
+          }
+          ?item wdt:P428 ?value.
+          SERVICE wikibase:label {
+            bd:serviceParam wikibase:language "[AUTO_LANGUAGE],en".
+            ?item rdfs:label ?itemLabel.
+          }
+        }""" % (vals)
+        r = requests.get("https://query.wikidata.org/sparql", params={'query' : query})
+        o = parse_sparql_return(r, ['item'], ['value', 'itemLabel'])
+        if r.ok:
+            out.extend(o)
+        else:
+            print(chunk)
+        time.sleep(1) # avoid error 429
+    auth2qid = {r['value'] : r['item'] for r in out}
+    return(auth2qid)
+
+
+def quickstatements_taxon_authors_from_citations(highertaxon_qid):
+    """Generate QuickStatements to add taxon author from taxon author citation strings
+
+    Parse taxon author citation strings to get author abbreviations (works for
+    botanical/fungal authors only, because these have a standardized form,
+    whereas zoological author abbreviations are not standardized and may not be
+    unique to a given author.)
+
+    Look up taxon author items and link these to the corresponding taxon items
+    as qualifiers to the taxon name statement.
+
+    Generates two QuickStatements files, one for taxon author statements, the
+    other for ex taxon author statements.
+
+    Parameters
+    ----------
+    highertaxon_qid : str
+        Wikidata QID of the higher taxon of interest.
+    """
+    r, o = get_taxon_author_citations_but_no_taxon_author(highertaxon_qid)
+    print(f"{str(len(o))} items found without taxon author qualifiers but with taxon author citations")
+    auth_parsed = {}
+    for rec in o:
+        auth_parsed[rec['item']] = parse_botanical_taxon_author_citation(
+            rec['taxonAuthorCitation']
+        )
+    auths = []
+    for item in auth_parsed:
+        auths.extend(auth_parsed[item]['auth'])
+        if 'ex_auth' in auth_parsed[item]:
+            auths.extend(auth_parsed[item]['ex_auth'])
+    auths = list(set(auths))
+    print(f"{str(len(auths))} distinct author name abbreviations found")
+    auth2qid = get_items_from_botanical_author_citation(auths)
+    print(f"of which {str(len(auth2qid))} author names could be linked to Wikidata items")
+    # output quickstatements
+    qs_auths = [['qid','P225','qal405','#'],] # initialize with header
+    qs_exauths = [['qid','P225','qal697','#'],] # initialize with header
+    for rec in o:
+        authors = parse_botanical_taxon_author_citation(rec['taxonAuthorCitation'])
+        if 'auth' in authors:
+            for a in authors['auth']:
+                if a in auth2qid:
+                    qs_auths.append([ rec['item'], '"""'+rec['taxonName']+'"""', auth2qid[a], 'matched from taxon author citation string'])
+        if 'ex_auth' in authors:
+            for a in authors['ex_auth']:
+                if a in auth2qid:
+                    qs_exauths.append([ rec['item'], '"""'+rec['taxonName']+'"""', auth2qid[a], 'matched from taxon author citation string'])
+    with open(f"add_taxon_author_{highertaxon_qid}.csv", "w") as fh:
+        for line in qs_auths:
+            fh.write(",".join(line))
+            fh.write("\n")
+    print(f"Output written to add_taxon_author_{highertaxon_qid}.csv")
+    if len(qs_exauths) > 1:
+        with open(f"add_ex_taxon_author_{highertaxon_qid}.csv", "w") as fh:
+            for line in qs_exauths:
+                fh.write(",".join(line))
+                fh.write("\n")
+        print(f"Output written to add_ex_taxon_author_{highertaxon_qid}.csv")
