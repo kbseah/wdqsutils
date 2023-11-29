@@ -722,7 +722,7 @@ def parse_botanical_taxon_author_citation(citation):
     elif citation.count(' ex ') == 1:
         [ex_auth, auth] = citation.split(' ex ')
         ex_auth = re.split(r',|&', ex_auth)
-        ex_auth = [a.replace('. ','.') for a in ex_auth]
+        ex_auth = [a.replace('. ','.').rstrip().lstrip() for a in ex_auth]
         auth = re.split(r',|&', auth)
         auth = [a.replace('. ','.').rstrip().lstrip() for a in auth]
         return { 'ex_auth' : ex_auth, 'auth' : auth }
@@ -810,6 +810,10 @@ def quickstatements_taxon_authors_from_citations(highertaxon_qid):
     print(f"{str(len(auths))} distinct author name abbreviations found")
     auth2qid = get_items_from_botanical_author_citation(auths)
     print(f"of which {str(len(auth2qid))} author names could be linked to Wikidata items")
+    notfound = [i for i in auths if i not in auth2qid]
+    if notfound:
+        print("The following author name abbreviations could not be found in Wikidata:")
+        print(" | ".join(notfound))
     # output quickstatements
     qs_auths = [['qid','P225','qal405','#'],] # initialize with header
     qs_exauths = [['qid','P225','qal697','#'],] # initialize with header
