@@ -711,6 +711,11 @@ def parse_botanical_taxon_author_citation(citation):
     elif citation.count(')') > 1:
         print(f"Too many parens in this citation: {citation}")
         return
+    if ':' in citation or ';' in citation or '?' in citation:
+        print(f"Unrecognized punctuation in this citation: {citation}")
+        return
+    if citation.count(' in ') == 1:
+        citation = citation.split(' in ')[0]
     if citation.count(' ex ') > 1:
         print(f"Too many 'ex' in this citation: {citation}")
         return
