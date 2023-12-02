@@ -840,3 +840,61 @@ def quickstatements_taxon_authors_from_citations(highertaxon_qid):
                 fh.write(",".join(line))
                 fh.write("\n")
         print(f"Output written to add_ex_taxon_author_{highertaxon_qid}.csv")
+
+
+def ris_to_quickstatements(ris, periodical2qid, flipauthorstring=True, title_langcode="en"):
+    """
+    Convert RIS citation file to Quickstatements V1
+
+    Parameters
+    ----------
+    ris : str
+        RIS citation in a single string
+    periodical2qid : dict
+        Dict translating journal names to QIDs, names in upper case
+    flipauthorstring : bool
+        Flip author name strings from lastname,firstname to firstname lastname?
+    title_langcode : str
+        Langcode for the titles
+    """
+    qs = [] # quickstatements v1
+    map = {
+        "A1" : "P2093", # author name string
+        "T1" : "P1476", # title
+        "UR" : "P953", # url
+        "IS" : "P433", # issue
+        "VL" : "P478", # volume
+    }
+    qs.append("CREATE")
+    qs.append("\t".join(["LAST", "P31", "Q13442814"]))
+    pagerange = {}
+    for line in ris.split("\n"):
+        spl = line.split("-")
+        tag = spl[0].rstrip()
+        val = "-".join(spl[1:]).lstrip().rstrip()
+        if tag in map:
+            if tag == "A1" and flipauthorstring:
+                valspl = val.split(",")
+                lastname = valspl[0].rstrip()
+                firstname = ",".join(valspl[1:]).lstrip().rstrip()
+                qs.append("\t".join(["LAST",map[tag],'"' + firstname + " " + lastname +'"']))
+            elif tag == "T1":
+                qs.append("\t".join(["LAST",map[tag], title_langcode + ':"' + val + '"']))
+                qs.append("\t".join(["LAST","Len",'"'+val[0:250]+'"'])) # use title as label (truncated to 250 characters)
+            else:
+                qs.append("\t".join(["LAST",map[tag],'"'+val+'"']))
+        elif tag == "T2":
+            try:
+                qs.append("\t".join(["LAST","P1433", periodical2qid[val.upper()]]))
+            except KeyError:
+                print("No QID listed for title " + val.upper())
+        elif tag == "Y1":
+            date = "+" + val + "-01-01T00:00:00Z/9"
+            qs.append("\t".join(["LAST","P577",date]))
+        elif tag == "SP":
+            pagerange["start"] = val
+        elif tag == "EP":
+            pagerange["end"] = val
+    if len(pagerange) == 2:
+        qs.append("\t".join(["LAST","P304", '"' + pagerange["start"] + "-" + pagerange["end"] +'"']))
+    return(qs)
