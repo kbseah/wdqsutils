@@ -732,36 +732,38 @@ def parse_botanical_taxon_author_citation(citation):
         return { 'auth' : auth }
 
 
-def get_items_from_botanical_author_citation(auths):
+def get_items_from_identifier_values(identifier_pid,values):
     """Look up Wikidata QIDs for botanical authors by author name abbreviation
 
     Query is broken into 25-value chunks with 1 second pauses in between.
 
     Parameters
     ----------
-    auths : list
-        List of author name abbreviations, no spaces after periods.
+    identifier_pid: str
+        Property id of the identifier
+    values : list
+        List of identifier values.
 
     Returns
     -------
     dict
-        Dict keyed by author name abbreviations with Wikidata QIDs as values.
+        Dict keyed by identifier values with Wikidata QIDs as values.
         QIDs not found are silently ignored.
     """
     out = []
     chunksize = 25 # avoid error 414
-    for chunk in [auths[i:i+chunksize] for i in range(0, len(auths), chunksize)]:
+    for chunk in [values[i:i+chunksize] for i in range(0, len(values), chunksize)]:
         vals = " ".join([f'"{a}"' for a in chunk])
         query = """SELECT ?item ?value ?itemLabel WHERE {
           VALUES ?value {
             %s
           }
-          ?item wdt:P428 ?value.
+          ?item wdt:%s ?value.
           SERVICE wikibase:label {
             bd:serviceParam wikibase:language "[AUTO_LANGUAGE],en".
             ?item rdfs:label ?itemLabel.
           }
-        }""" % (vals)
+        }""" % (vals, identifier_pid)
         r = requests.get("https://query.wikidata.org/sparql", params={'query' : query})
         o = parse_sparql_return(r, ['item'], ['value', 'itemLabel'])
         if r.ok:
@@ -769,8 +771,8 @@ def get_items_from_botanical_author_citation(auths):
         else:
             print(chunk)
         time.sleep(1) # avoid error 429
-    auth2qid = {r['value'] : r['item'] for r in out}
-    return(auth2qid)
+    identifier2qid = {r['value'] : r['item'] for r in out}
+    return identifier2qid
 
 
 def quickstatements_taxon_authors_from_citations(highertaxon_qid):
@@ -808,7 +810,7 @@ def quickstatements_taxon_authors_from_citations(highertaxon_qid):
             auths.extend(auth_parsed[item]['ex_auth'])
     auths = list(set(auths))
     print(f"{str(len(auths))} distinct author name abbreviations found")
-    auth2qid = get_items_from_botanical_author_citation(auths)
+    auth2qid = get_items_from_identifier_values('P428',auths)
     print(f"of which {str(len(auth2qid))} author names could be linked to Wikidata items")
     notfound = [i for i in auths if i not in auth2qid]
     if notfound:
